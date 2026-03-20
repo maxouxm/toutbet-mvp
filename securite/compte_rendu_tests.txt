@@ -1,0 +1,29 @@
+======================================================================
+  COMPTE-RENDU – TESTS ABUSE STORIES – ToutBet'
+  Généré le : 2026-03-18 09:36:55
+  Cible     : http://127.0.0.1:8010
+======================================================================
+
+  Résumé : 2 SÉCURISÉ(s)  |  1 VULNÉRABLE(s)  |  3 test(s) au total
+
+─── Test 1 : Pari à montant négatif ────────────────────────────
+  Payload envoyé  : {"side": "yes", "amount_tokens": -50}
+  Statut HTTP     : 422
+  Résultat        : SÉCURISÉ
+  Détail          : Le serveur a correctement rejeté le montant invalide.
+
+─── Test 2 : Pari sur marché clôturé ───────────────────────────
+  Payload envoyé  : {"side": "yes", "amount_tokens": 10, "market_id": 17}
+  Statut HTTP     : 400
+  Résultat        : SÉCURISÉ
+  Détail          : Le serveur a correctement refusé le pari sur un marché résolu.
+
+─── Test 3 : Injection XSS dans le titre ───────────────────────
+  Payload envoyé  : {"title": "<script>alert('XSS')</script>", "description": "Description de test pour vérifier la résistance au XSS. Ce champ doit être suffisamment long pour passer la validation."}
+  Statut HTTP     : 201
+  Résultat        : VULNÉRABLE
+  Détail          : ÉCHEC DE SÉCURITÉ : le payload XSS a été accepté et stocké en base. Si le frontend affiche ce titre sans échappement HTML, le script s'exécutera dans le navigateur de toute victime consultant le marché.
+
+======================================================================
+  FIN DU RAPPORT
+======================================================================

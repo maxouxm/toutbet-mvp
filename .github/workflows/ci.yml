@@ -1,0 +1,119 @@
+# ══════════════════════════════════════════════════════════════════════
+#  ToutBet' – Pipeline CI : Tests E2E (Abuse Stories)
+# ══════════════════════════════════════════════════════════════════════
+#
+# ┌─ STRATÉGIE DES SECRETS ──────────────────────────────────────────┐
+# │                                                                    │
+# │  1. COMMENT ILS SONT DÉFINIS (pipeline de déploiement continu)    │
+# │     Les secrets sensibles sont stockés dans GitHub :               │
+# │       Settings > Secrets and variables > Actions                   │
+# │     Variables requises :                                           │
+# │       • JWT_SECRET          – clé de signature des tokens JWT      │
+# │       • AUDIT_LOG_SECRET    – clé HMAC des logs d'audit            │
+# │     En production (CD), un outil de vault (ex. HashiCorp Vault,    │
+# │     AWS Secrets Manager) injecte les valeurs en env vars au        │
+# │     moment du déploiement. Jamais écrites dans le code ni git.     │
+# │                                                                    │
+# │  2. COMMENT L'APPLICATION LES RÉCUPÈRE                             │
+# │     backend/settings.py utilise pydantic-settings (BaseSettings).  │
+# │     Ordre de priorité : variables d'environnement > fichier .env   │
+# │     En CI/prod : uniquement les env vars (pas de .env déployé).    │
+# │     En dev local : fichier backend/.env (exclu du dépôt via        │
+# │     .gitignore, copié depuis backend/.env.example).                │
+# │     Les champs jwt_secret et audit_log_secret sont obligatoires    │
+# │     (pas de valeur par défaut) : l'app refuse de démarrer si       │
+# │     absents – pas de fallback silencieux.                          │
+# └────────────────────────────────────────────────────────────────────┘
+
+name: CI – Tests E2E Abuse Stories
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  e2e-tests:
+    name: Tests E2E (Abuse Stories)
+    runs-on: ubuntu-latest
+
+    env:
+      # ── Secrets sensibles (définis dans GitHub → Settings → Secrets) ──
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      AUDIT_LOG_SECRET: ${{ secrets.AUDIT_LOG_SECRET }}
+
+      # ── Configuration non-sensible pour la CI ─────────────────────────
+      DATABASE_URL: "sqlite:///./toutbet_ci.db"
+      ENV: "dev"
+      DEBUG: "false"
+      FRONTEND_ORIGINS: "http://127.0.0.1:5173"
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: "lax"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+      REFRESH_TOKEN_EXPIRE_DAYS: "7"
+
+    steps:
+      # ── 1. Récupération du code ────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Python 3.12 (pydantic-core exige < 3.14) ───────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      # ── 3. Dépendances backend ─────────────────────────────────────────
+      - name: Installer les dépendances backend
+        run: pip install -r backend/requirements.txt
+
+      # ── 4. Initialisation de la base de données ────────────────────────
+      - name: Initialiser la base de données
+        working-directory: backend
+        run: python -c "from main import init_db; init_db(); print('DB initialisée')"
+
+      # ── 5. Seed des marchés de démonstration ──────────────────────────
+      #    Les tests E2E ont besoin d'un marché ouvert ET d'un marché
+      #    résolu pour couvrir les abuse stories 1 & 2.
+      - name: Seed des données de démonstration
+        working-directory: backend
+        run: python scripts/seed_demo.py
+
+      # ── 6. Démarrage du backend en arrière-plan ───────────────────────
+      - name: Démarrer le backend
+        working-directory: backend
+        run: |
+          python -m uvicorn main:app --host 127.0.0.1 --port 8010 &
+          echo $! > /tmp/uvicorn.pid
+          # Attente active : jusqu'à 30 secondes
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8010/health > /dev/null 2>&1; then
+              echo "Backend prêt (tentative $i/30)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Timeout : le backend n'a pas démarré dans les 30 s"
+          exit 1
+
+      # ── 7. Tests E2E : Abuse Stories ──────────────────────────────────
+      - name: Exécuter les tests E2E
+        working-directory: securite
+        run: python tests_abuse_stories.py
+
+      # ── 8. Arrêt propre du backend ────────────────────────────────────
+      - name: Arrêter le backend
+        if: always()
+        run: kill "$(cat /tmp/uvicorn.pid)" 2>/dev/null || true
+
+      # ── 9. Publication du compte-rendu comme artefact CI ─────────────
+      - name: Publier le compte-rendu des tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-rapport-${{ github.run_number }}
+          path: securite/compte_rendu_tests.txt
+          retention-days: 30
